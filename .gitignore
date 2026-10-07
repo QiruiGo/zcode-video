@@ -1,0 +1,12 @@
+# 运行时依赖与产物（均可重建：npm install / corpus-cli download / video-cli build）
+node_modules/
+corpus/
+output/
+config.json
+*.log
+
+# ZCode 会话本机状态
+.zcode/
+
+# 冒烟抽帧
+frame-*.png
