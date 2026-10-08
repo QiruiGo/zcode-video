@@ -139,6 +139,8 @@ interface QaResult {
   verdict: string;
   /** 发现的问题清单，没有就空数组 */
   issues: QaIssue[];
+  /** 抽帧目录（output/<id>/qa），帧留给视觉模型单独目检 */
+  qaFrameDir: string;
 }
 
 interface Finding {
@@ -244,7 +246,7 @@ const baseInstruction = topic.userDraft
   ? "用户自备了一份草稿，整份如下。以它为基准产出分镜稿：保留用户的结构、论点与表达习惯，只做三件事——①用语料核证每个论断（查不到的标注或删）②补出处 cite ③满足字数与语速约束。用户草稿：\n" + topic.userDraft + "\n"
   : "从零撰写。";
 let draft = await writer.ask<DraftResult>(
-  "为第一期视频产出逐分镜文案。" + baseInstruction + "\n" +
+  "为第一期视频产出逐分镜文案。动笔前先把全片叙事结构（起承转合到落点）想清楚再逐镜展开。" + baseInstruction + "\n" +
   "主题：" + topic.subject + "；时长：" + topic.duration + "；风格：" + topic.style + "。\n" +
   "证据表：" + JSON.stringify(research.evidence) + "\n" +
   "网络补充：" + JSON.stringify(research.webSources) + "\n" +
@@ -297,6 +299,24 @@ if (!approved) {
 }
 report({ stage: "文案与 G1", status: "完成", note: draft.videoTitle + "，" + draft.sceneCount + " 镜" }, "pipeline");
 log("G1 通过：" + draft.videoTitle + "，" + draft.sceneCount + " 镜");
+
+phase("文案去 AI 味审核");
+const polishAgent = agent("文案润色师", {
+  system: "你按 humanizer-zh 的方法给中文文案去 AI 味：只处理确实存在的表达问题，保留事实、确定程度、引用与作者声音；不为了展示工作量强改已经通顺的文字；检查不过的宁可不改。工作目录 ROOT=" + ROOT + "。",
+});
+draft = await polishAgent.ask<DraftResult>(
+  "对 " + draft.scenesFile + " 的 40 镜旁白做去 AI 味审核。\n" +
+  "第一步：完整 Read C:\\Users\\Administrator\\.zcode\\skills\\humanizer-zh\\SKILL.md，把它作为你的编辑方法（31 条模式清单 + 约束优先级 + 交付前核对）。\n" +
+  "第二步：逐镜审 narration，按该方法改写。硬边界：\n" +
+  "① 所有直接引语（引号内的台词原文）必须逐字保留——那是语料原文引用，不是文案；\n" +
+  "② title、cite、image、镜序、镜数一律不动，只改 narration 的文风；\n" +
+  "③ 这是剧情向解说旁白，去 AI 味不等于口语化降级，保留原有叙事语感与节奏（skill 的「匹配作者声音」约束）；\n" +
+  "④ 改完每镜仍要满足：30~90 字、单条字幕切分 ≤18 字、语速 ≤7 字/秒。\n" +
+  "第三步：自校验（写个 node 脚本核对：镜数 40；title/cite/image 与改前逐字段一致；各引语逐字未动；字数区间达标），更新文件后返回 DraftResult（scenes 带文件里的完整字段），并在返回前用一句话说明改了多少镜、主要动了哪类问题。"
+);
+report({ stage: "去 AI 味", status: "完成", note: "旁白已按 humanizer-zh 审核" }, "pipeline");
+await artifact.markdown("draft", renderScenes(draft.videoTitle, draft.scenes), { title: "分镜文案 · 去 AI 味版（随 G2 确认）" });
+log("去 AI 味审核完成，G2 分镜表将使用润色后文案");
 
 const setup = agent("项目装配员", {
   system: "你负责用 video-cli 建项目、灌分镜、把分镜表交用户做 G2 确认，不改分镜内容。" + COMMON,
@@ -368,14 +388,14 @@ const qa = agent("验收员", {
   system: "你是成片验收员，只看不改，结论必须有证据：命令输出或你亲眼看到的画面。" + COMMON,
 });
 const qaResult = await qa.ask<QaResult>(
-  "验收 " + rendered.episodePath + "：\n" +
+  "对 " + rendered.episodePath + " 做程序化验收（本环节不看图，画面观感稍后由专门的视觉模型检查）：\n" +
   "1) ffprobe 读实际时长，与估算值 " + project.estimatedSeconds + " 秒对比，偏差超过 20% 记一条问题；\n" +
-  "2) 用 ffmpeg（优先 " + ROOT + "/node_modules 里的 @ffmpeg-installer，其次 PATH）在 25% 和 75% 处各抽一帧 PNG 到系统临时目录，用 Read 亲眼看图：中文渲染是否正常、字幕是否在画面安全区内、排版有无破版；\n" +
+  "2) 用 ffmpeg（优先 " + ROOT + "/node_modules 里的 @ffmpeg-installer，其次 PATH）在 25%、50%、75% 三处各抽一帧 PNG，写到 " + ROOT + "/output/" + rendered.projectId + "/qa/ 下（frame-25.png、frame-50.png、frame-75.png），qaFrameDir 返回该目录绝对路径；\n" +
   "3) 检查 " + rendered.subtitlePath + " 非空，条数与 " + draft.sceneCount + " 镜的量级一致；\n" +
   (rendered.cgNote
-    ? "4) 配图检查：" + rendered.cgNote + "——抽帧里应能看到照片级背景而不是纯渐变底；若 cgNote 显示有成功下载的配图但抽帧全是纯渐变底，记一条问题。\n"
+    ? "4) 配图落地校验：" + rendered.cgNote + "——统计 " + ROOT + "/output/" + rendered.projectId + "/frames/ 下大于 300KB 的 PNG 数量，应与配图成功的分镜数一致（照片背景的帧远大于纯渐变卡片），不一致记一条问题；\n"
     : "") +
-  "不要修改任何项目文件。问题为空就是真没有，不要凑数。"
+  "不要修改任何项目文件，也不要用 Read 看图。问题为空就是真没有，不要凑数。"
 );
 for (const issue of qaResult.issues) {
   report({ stage: "成片验收", status: "有问题", note: issue.what }, "pipeline");
@@ -449,6 +469,7 @@ await artifact.markdown("delivery", reportLines.join("\n"), { title: "交付报�
 
 const notCovered: string[] = [
   "配音音色与成片节奏未经真人完整试听",
+  "画面观感结论由渲染完成后的视觉验收 run（step-5-preview）单独出具，不在本 run 内",
   "引用抽查只核了 " + spot.checked + " 条，其余出处靠 G1 人工审阅把关",
   "BGM 未配置（config.json 默认关闭，素材用户自备）",
   "贴纸/表情包层尚未实现（docs/sticker-sources.md 的方案待拍板）",
@@ -459,9 +480,10 @@ return {
   conclusion: "第一期「" + topic.subject + "」已出片：" + draft.sceneCount + " 镜（文案与分镜均经你逐版审阅通过），成片在 " + rendered.episodePath + "，配音 " + rendered.provider + (allExist ? "，产物存在性已校验" : "，但产物存在性校验未通过") + "。验收发现 " + qaResult.issues.length + " 个问题，详见交付报告。",
   findings,
   verified: [
+    "文案经 humanizer-zh（去 AI 味编辑法）逐镜审核，台词引语逐字保留有校验",
     "node -e existsSync：episode.mp4 / subtitle.srt / project.json 三个产物逐一确认" + (allExist ? "全部存在" : "未全部存在"),
     "node video-cli show " + rendered.projectId + "：引擎状态回读（exit=" + show.exitCode + "）",
-    "验收员 ffprobe 实测时长 + 25%/75% 两处抽帧目检中文渲染与字幕位置",
+    "验收员 ffprobe 实测时长 + 25%/50%/75% 三处抽帧落盘 + 字幕条数" + (rendered.cgNote ? " + 配图帧大小校验" : "") + "（画面观感由 step-5-preview 视觉模型另行目检）",
   ],
   notCovered,
 };
