@@ -61,6 +61,10 @@ except Exception as error:
     sys.exit(1)
 `
 
+/** 瞬时合成错误（服务抖动/限流）按此节奏退避重试；环境缺失类不重试。 */
+const TRANSIENT_TTS_ERROR = /NoAudioReceived|403|Timeout|timeout|timed?\s*out|ConnectionError|RESET|reset/i
+const RETRY_DELAYS_MS = [3_000, 8_000, 20_000]
+
 /**
  * 用 edge-tts 合成一段旁白。
  * @param {object} options - 合成参数。
@@ -86,21 +90,27 @@ export async function synthesize({ text, voice, outFile, ttsConfig, signal }) {
     media: outFile,
   })
 
-  const result = await runProcess(
-    ttsConfig.pythonPath,
-    ['-c', PYTHON_DRIVER, request],
-    { signal, timeoutMs: 300_000 },
-  )
+  // edge-tts 实测会在连续批量合成中途抖动（NoAudioReceived/403），
+  // 单发重试即可恢复；不给重试会让 40 镜的配音在任意一镜上整轮失败。
+  let lastError
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt - 1]))
+    const result = await runProcess(
+      ttsConfig.pythonPath,
+      ['-c', PYTHON_DRIVER, request],
+      { signal, timeoutMs: 300_000 },
+    )
 
-  // edge-tts 依赖网络；Python 驱动把异常压成一行 JSON，
-  // 这里区分「环境缺 edge-tts」和「合成失败」两种可自愈性不同的情况。
-  let payload
-  const lastLine = (result.stdout || '').trim().split('\n').filter(Boolean).pop()
-  if (lastLine) {
-    try { payload = JSON.parse(lastLine) } catch { payload = undefined }
-  }
+    // edge-tts 依赖网络；Python 驱动把异常压成一行 JSON，
+    // 这里区分「环境缺 edge-tts」和「合成失败」两种可自愈性不同的情况。
+    let payload
+    const lastLine = (result.stdout || '').trim().split('\n').filter(Boolean).pop()
+    if (lastLine) {
+      try { payload = JSON.parse(lastLine) } catch { payload = undefined }
+    }
 
-  if (result.code !== 0 || !payload?.ok) {
+    if (result.code === 0 && payload?.ok) return payload.boundaries ?? []
+
     const detail = payload?.error || (result.stderr || '').trim().split('\n').slice(-4).join('\n')
     if (/ModuleNotFoundError|No module named 'edge_tts'|edge_tts/i.test(detail)) {
       throw environmentError(
@@ -109,10 +119,10 @@ export async function synthesize({ text, voice, outFile, ttsConfig, signal }) {
         { detail },
       )
     }
-    throw processFailure(`语音合成失败：${detail}`, { voice: request.voice })
+    lastError = processFailure(`语音合成失败：${detail}`, { voice: request.voice })
+    if (!TRANSIENT_TTS_ERROR.test(detail)) break
   }
-
-  return payload.boundaries ?? []
+  throw lastError
 }
 
 /** 探测 edge-tts 是否可用，供 doctor 使用。 */

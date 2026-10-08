@@ -376,13 +376,13 @@ const renderer = agent("渲染师", {
 const rendered = await renderer.ask<RenderResult>(
   "把项目 " + project.projectId + " 出成片。\n" +
   "1) 先 node \"" + VIDEO_CLI + "\" doctor，环境有问题就升级问题。\n" +
-  "2) 配图落地（" + draft.scenesFile + " 里有 scene.image 才做，没有就跳到第 3 步）：收集所有 image 的唯一文件名，逐个下载到 " + ROOT + "/assets/cg/<文件名>。下载用查证员核过的直链：curl -sL -A \"zcode-video-workflow/0.1\" -o \"<目标>\" \"<url>\"（直链清单：" + JSON.stringify(research.cgLeads.map(c => ({ file: c.file, url: c.url }))) + "）；直链失效就用 imageinfo 重查。下载后校验文件头是 PNG（89 50 4E 47）或 JPEG（FF D8）且大于 50KB；失败的记入 warnings 并在渲染副本里去掉该镜的 image。全部处理完后写 " + ROOT + "/scenes-render.json：内容为原分镜数组、仅把 image 换成本地绝对路径、其余字段原样，然后 node \"" + VIDEO_CLI + "\" script " + project.projectId + " --scenes-file " + ROOT + "/scenes-render.json 重新灌入。cgNote 返回「成功 N / 共 M 张」。\n" +
-  "3) node \"" + VIDEO_CLI + "\" all " + project.projectId + " --force --provider " + providerFlag +
+  "2) 配图落地（" + draft.scenesFile + " 里有 scene.image 才做，没有就跳到第 3 步）：收集所有 image 的唯一文件名，逐个下载到 " + ROOT + "/assets/cg/<文件名>。下载用查证员核过的直链：curl -sL -A \"zcode-video-workflow/0.1\" -o \"<目标>\" \"<url>\"（直链清单：" + JSON.stringify(research.cgLeads.map(c => ({ file: c.file, url: c.url }))) + "）；直链失效或不在清单里就用 imageinfo 重查（关卡码/活动页不可靠——CG 是孤立素材，页面 prop=images 多半为空）。下载后校验文件头是 PNG（89 50 4E 47）或 JPEG（FF D8）且大于 50KB；**分镜用图必须先看一眼内容**（Read 图片）确认画面与该镜剧情是同一节点，不相关的撤图；失败的记入 warnings 并在渲染副本里去掉该镜的 image。全部处理完后写渲染副本（image 换成本地绝对路径），用 script 命令重新灌入。\n" +
+  "3) **定稿渲染一律真配音**（节奏事实源）：node \"" + VIDEO_CLI + "\" all " + project.projectId + " --force --provider " + providerFlag +
   (providerFlag === "none"
-    ? "（无声预览，时长按 5 字/秒估算）"
-    : "（edge-tts 偶发 403/超时：稍等重试，最多两次；仍失败改用 --provider none 重跑，并在 warnings 里注明降级）") +
+    ? "（用户明确选了无声预览：时长与字幕按 5 字/秒估算，交付时注明）"
+    : "。**字幕出现与背景切换必须跟语音节奏**：voice 阶段逐镜合成音频并实测时长（背景切换点=实测音频边界），镜内字幕用词级时间戳（WordBoundary）。edge-tts 偶发 403/超时：稍等重试，最多两次；仍失败改用 --provider none 重跑并在 warnings 里注明降级（字幕/切镜退化为文字估算）") +
   "。all 是渲染+配音+合成，可能超过 2 分钟，Bash 超时参数设 600000。\n" +
-  "4) 产物在 " + ROOT + "/output/" + project.projectId + "/ 下：episode.mp4、subtitle.srt、project.json，逐个确认存在后把绝对路径返回。\n" +
+  "4) 产物在 " + ROOT + "/output/" + project.projectId + "/ 下：episode.mp4、subtitle.srt、project.json，逐个确认存在；再跑 node \"" + VIDEO_CLI + "\" show " + project.projectId + " 确认 timeline 的 boundaries 来源是词级时间戳（provider 非 none 时），把绝对路径返回。\n" +
   "不要改分镜内容。"
 );
 report({ stage: "出片", status: "完成", note: "provider=" + rendered.provider + (rendered.warnings.length > 0 ? "（有警告）" : "") }, "pipeline");
@@ -396,7 +396,10 @@ const qaResult = await qa.ask<QaResult>(
   "对 " + rendered.episodePath + " 做程序化验收（本环节不看图，画面观感稍后由专门的视觉模型检查）：\n" +
   "1) ffprobe 读实际时长，与估算值 " + project.estimatedSeconds + " 秒对比，偏差超过 20% 记一条问题；\n" +
   "2) 用 ffmpeg（优先 " + ROOT + "/node_modules 里的 @ffmpeg-installer，其次 PATH）在 25%、50%、75% 三处各抽一帧 PNG，写到 " + ROOT + "/output/" + rendered.projectId + "/qa/ 下（frame-25.png、frame-50.png、frame-75.png），qaFrameDir 返回该目录绝对路径；\n" +
-  "3) 检查 " + rendered.subtitlePath + " 非空，条数与 " + draft.sceneCount + " 镜的量级一致；\n" +
+  "3) 检查 " + rendered.subtitlePath + " 非空，条数与 " + draft.sceneCount + " 镜的量级一致；" +
+  (providerFlag === "none"
+    ? ""
+    : "配音版额外核验节奏事实源：读 " + rendered.projectPath + "，确认每镜 duration 来自实测音频（timeline 里有 measured/boundaries 字段），且字幕 cue 的时长分布不均匀（语音节奏的自然特征；若全部等长说明退化成了文字估算，记一条问题）；") + "\n" +
   (rendered.cgNote
     ? "4) 配图落地校验：" + rendered.cgNote + "——统计 " + ROOT + "/output/" + rendered.projectId + "/frames/ 下大于 300KB 的 PNG 数量，应与配图成功的分镜数一致（照片背景的帧远大于纯渐变卡片），不一致记一条问题；\n"
     : "") +

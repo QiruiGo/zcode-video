@@ -98,11 +98,14 @@ node bin/video-cli.mjs build  <id> [--force]
 node bin/video-cli.mjs all    <id> [--force]
 ```
 
-- `--provider none`：无声视频（时长按 5 字/秒估算）。**定稿前预览一律用 none，快且省。**
-- 本机 edge-tts 可用（默认 provider），终稿可带预览配音；`subtitle_source:
-  word-boundary` 表示字幕用的是词级时间戳，同步精确。
+- `--provider none`：无声视频（时长按 5 字/秒估算），**只用于定稿前的快速预览**。
+- 本机 edge-tts 可用（默认 provider）；**定稿渲染一律真配音——字幕出现与背景切换
+  的节奏事实源是实测语音**：voice 阶段逐镜合成并实测音频时长（背景在该镜语音
+  结束时切换），镜内字幕用词级时间戳（`subtitle_source: word-boundary`）逐词跟进。
+  无声预览的字幕/切镜是文字估算，交付时须注明。
 - 配置 BGM：编辑 config.json 的 `bgm` 节（enabled/dir/volume），素材用户自备。
-- 成片重复生成要 `--force`；改画面不重配音时只跑 `build`。
+- 成片重复生成要 `--force`；改画面不重配音时只跑 `build`；**改稿（文字/时长）
+  必须重跑 `voice`——时间线随语音重建**。
 
 ### 4 · 交付
 
