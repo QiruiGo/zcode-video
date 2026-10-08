@@ -246,7 +246,7 @@ const baseInstruction = topic.userDraft
   ? "用户自备了一份草稿，整份如下。以它为基准产出分镜稿：保留用户的结构、论点与表达习惯，只做三件事——①用语料核证每个论断（查不到的标注或删）②补出处 cite ③满足字数与语速约束。用户草稿：\n" + topic.userDraft + "\n"
   : "从零撰写。";
 let draft = await writer.ask<DraftResult>(
-  "为第一期视频产出逐分镜文案。动笔前先把全片叙事结构（起承转合到落点）想清楚再逐镜展开。" + baseInstruction + "\n" +
+  "为第一期视频产出逐分镜文案。动笔前先完整 Read " + ROOT + "/skill/storyboard/SKILL.md，按其五条原则与写稿流程执行（预算→结构→成稿→配图→过门）；成稿必须用 node " + ROOT + "/skill/storyboard/scripts/validate-scenes.mjs <scenes文件> --target <目标分钟区间> 全门通过。" + baseInstruction + "\n" +
   "主题：" + topic.subject + "；时长：" + topic.duration + "；风格：" + topic.style + "。\n" +
   "证据表：" + JSON.stringify(research.evidence) + "\n" +
   "网络补充：" + JSON.stringify(research.webSources) + "\n" +
