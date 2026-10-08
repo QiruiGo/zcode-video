@@ -10,3 +10,6 @@ config.json
 
 # 冒烟抽帧
 frame-*.png
+
+# 渲染中间产物（含本机绝对路径）
+scenes-render.json
