@@ -14,8 +14,8 @@
 /** offset/duration 的单位换算：100ns → 秒。 */
 const TICKS_PER_SECOND = 1e7
 
-/** 一句话结束时常见的收尾标点。 */
-const CLAUSE_END = /[，。！？；：、,.!?;:]$/u
+/** 一句话结束时常见的收尾标点（含收尾引号/括号，否则 ” 会孤零零挂到下一行）。 */
+const CLAUSE_END = /[，。！？；：、,.!?;:」』”’）)]$/u
 
 /**
  * 把词级时间戳按标点与长度上限切分成字幕行。
@@ -47,6 +47,11 @@ export function cuesFromBoundaries(boundaries, options = {}) {
   }
 
   for (const boundary of boundaries) {
+    // 收尾引号/括号单独到达时回贴到上一条，避免出现只有 ” 的字幕。
+    if (!pending.length && cues.length && /^[」』”’）)]+$/u.test(boundary.text)) {
+      cues[cues.length - 1].text += boundary.text
+      continue
+    }
     pending.push(boundary)
     const chars = pending.reduce((sum, item) => sum + item.text.length, 0)
     if (CLAUSE_END.test(boundary.text) || chars >= maxCharsPerLine) flush()
@@ -66,10 +71,19 @@ export function cuesFromBoundaries(boundaries, options = {}) {
  * @returns {Array<{ start: number, end: number, text: string }>} 估算出的字幕行。
  */
 export function cuesFromText(text, durationSec, startSec = 0) {
-  const segments = String(text ?? '')
+  const raw = String(text ?? '')
     .split(/(?<=[，。！？；：、,.!?;:])/u)
     .map((part) => part.trim())
     .filter(Boolean)
+  // 句号在引号内（…。”）时，收尾引号会被切进下一段开头——回贴到上一段，
+  // 否则会生成只有 ” 的字幕，或让下一行以 ” 开头。
+  const segments = []
+  for (const part of raw) {
+    const leading = part.match(/^[」』”’）)]+/u)
+    if (leading && segments.length) segments[segments.length - 1] += leading[0]
+    const rest = part.slice(leading ? leading[0].length : 0)
+    if (rest) segments.push(rest)
+  }
   if (!segments.length) return []
 
   const totalChars = segments.reduce((sum, part) => sum + part.length, 0) || 1
