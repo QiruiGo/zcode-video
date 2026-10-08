@@ -363,6 +363,11 @@ if (project === undefined || !approved2) {
 }
 report({ stage: "分镜确认", status: "完成", note: "项目 " + project.projectId + "，约 " + project.estimatedSeconds + " 秒" }, "pipeline");
 
+// 标题以项目清单为准：后续阶段（润色等）改过 DraftResult.videoTitle 也不会带进交付物。
+const titleFetch = await world.run("node", ["-e", "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).title)", ROOT + "/output/" + project.projectId + "/project.json"]);
+const finalTitle = titleFetch.exitCode === 0 && titleFetch.stdout.trim() ? titleFetch.stdout.trim() : draft.videoTitle;
+log("成片标题（以项目清单为准）：" + finalTitle);
+
 phase("渲染与配音出片");
 const providerFlag = topic.provider === "none" ? "none" : "python-edge-tts";
 const renderer = agent("渲染师", {
@@ -436,11 +441,11 @@ for (const issue of qaResult.issues) {
 const relEpisode = "output/" + rendered.projectId + "/episode.mp4";
 let episodePublished = false;
 try {
-  await artifact.file("episode", relEpisode, { title: "第一期成片", description: draft.videoTitle, primary: true });
+  await artifact.file("episode", relEpisode, { title: "第一期成片", description: finalTitle, primary: true });
   episodePublished = true;
 } catch {
   try {
-    await artifact.file("episode", rendered.episodePath, { title: "第一期成片", description: draft.videoTitle, primary: true });
+    await artifact.file("episode", rendered.episodePath, { title: "第一期成片", description: finalTitle, primary: true });
     episodePublished = true;
   } catch {
     log("成片文件发布失败，路径见交付报告");
@@ -448,7 +453,7 @@ try {
 }
 
 const reportLines: string[] = [];
-reportLines.push("# 交付报告：" + draft.videoTitle, "");
+reportLines.push("# 交付报告：" + finalTitle, "");
 reportLines.push("- 主题：" + topic.subject + "（" + topic.style + "）");
 reportLines.push("- 项目 id：" + rendered.projectId);
 reportLines.push("- 成片：" + rendered.episodePath + (episodePublished ? "" : "（发布为卡片失败，请直接打开文件）"));
@@ -465,7 +470,7 @@ if (research.webSources.length > 0) {
   reportLines.push("", "## 网络补充来源", ...research.webSources.map(s => "- " + s));
 }
 reportLines.push("", "## 发布建议", "", "简介固定加一句：本视频为非官方二次创作，与上海鹰角网络科技有限公司无关；《明日方舟》游戏素材版权归鹰角网络所有。");
-await artifact.markdown("delivery", reportLines.join("\n"), { title: "交付报告：" + draft.videoTitle });
+await artifact.markdown("delivery", reportLines.join("\n"), { title: "交付报告：" + finalTitle });
 
 const notCovered: string[] = [
   "配音音色与成片节奏未经真人完整试听",
